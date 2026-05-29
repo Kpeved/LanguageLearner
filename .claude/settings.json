@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(swift build*)",
+      "Bash(swift test*)",
+      "Bash(swift package*)",
+      "Bash(xcodebuild*)",
+      "Bash(xcrun simctl*)",
+      "Bash(xcbeautify*)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git add*)",
+      "Bash(git commit*)",
+      "Bash(git branch*)",
+      "Bash(git worktree*)",
+      "Bash(ls*)",
+      "Bash(find*)",
+      "Bash(mkdir*)"
+    ]
+  }
+}

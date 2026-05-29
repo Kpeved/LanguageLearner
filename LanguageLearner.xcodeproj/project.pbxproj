@@ -6,6 +6,15 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		72E1DAEC2FC8AA1400747F0F /* Alignment in Frameworks */ = {isa = PBXBuildFile; productRef = 72E1DAEB2FC8AA1400747F0F /* Alignment */; };
+		72E1DAEE2FC8AA1400747F0F /* EPUBKit in Frameworks */ = {isa = PBXBuildFile; productRef = 72E1DAED2FC8AA1400747F0F /* EPUBKit */; };
+		72E1DAF02FC8AA1400747F0F /* ImportUI in Frameworks */ = {isa = PBXBuildFile; productRef = 72E1DAEF2FC8AA1400747F0F /* ImportUI */; };
+		72E1DAF22FC8AA1400747F0F /* LibraryStore in Frameworks */ = {isa = PBXBuildFile; productRef = 72E1DAF12FC8AA1400747F0F /* LibraryStore */; };
+		72E1DAF42FC8AA1400747F0F /* ReaderUI in Frameworks */ = {isa = PBXBuildFile; productRef = 72E1DAF32FC8AA1400747F0F /* ReaderUI */; };
+		72E1DAF62FC8AA1400747F0F /* TTSService in Frameworks */ = {isa = PBXBuildFile; productRef = 72E1DAF52FC8AA1400747F0F /* TTSService */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		72E1DAC82FC8936F00747F0F /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -52,6 +61,12 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				72E1DAF02FC8AA1400747F0F /* ImportUI in Frameworks */,
+				72E1DAEC2FC8AA1400747F0F /* Alignment in Frameworks */,
+				72E1DAF22FC8AA1400747F0F /* LibraryStore in Frameworks */,
+				72E1DAF42FC8AA1400747F0F /* ReaderUI in Frameworks */,
+				72E1DAF62FC8AA1400747F0F /* TTSService in Frameworks */,
+				72E1DAEE2FC8AA1400747F0F /* EPUBKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -78,6 +93,7 @@
 				72E1DABA2FC8936D00747F0F /* LanguageLearner */,
 				72E1DACA2FC8936F00747F0F /* LanguageLearnerTests */,
 				72E1DAD42FC8936F00747F0F /* LanguageLearnerUITests */,
+				72E1DAEA2FC8AA1400747F0F /* Frameworks */,
 				72E1DAB92FC8936D00747F0F /* Products */,
 			);
 			sourceTree = "<group>";
@@ -90,6 +106,13 @@
 				72E1DAD12FC8936F00747F0F /* LanguageLearnerUITests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		72E1DAEA2FC8AA1400747F0F /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -112,6 +135,12 @@
 			);
 			name = LanguageLearner;
 			packageProductDependencies = (
+				72E1DAEB2FC8AA1400747F0F /* Alignment */,
+				72E1DAED2FC8AA1400747F0F /* EPUBKit */,
+				72E1DAEF2FC8AA1400747F0F /* ImportUI */,
+				72E1DAF12FC8AA1400747F0F /* LibraryStore */,
+				72E1DAF32FC8AA1400747F0F /* ReaderUI */,
+				72E1DAF52FC8AA1400747F0F /* TTSService */,
 			);
 			productName = LanguageLearner;
 			productReference = 72E1DAB82FC8936D00747F0F /* LanguageLearner.app */;
@@ -195,6 +224,14 @@
 			);
 			mainGroup = 72E1DAAF2FC8936D00747F0F;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				72E1DAE42FC8A9A900747F0F /* XCLocalSwiftPackageReference "Packages/Alignment" */,
+				72E1DAE52FC8A9B400747F0F /* XCLocalSwiftPackageReference "Packages/EPUBKit" */,
+				72E1DAE62FC8A9C200747F0F /* XCLocalSwiftPackageReference "Packages/ImportUI" */,
+				72E1DAE72FC8A9CF00747F0F /* XCLocalSwiftPackageReference "Packages/LibraryStore" */,
+				72E1DAE82FC8A9D900747F0F /* XCLocalSwiftPackageReference "Packages/ReaderUI" */,
+				72E1DAE92FC8A9E100747F0F /* XCLocalSwiftPackageReference "Packages/TTSService" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 72E1DAB92FC8936D00747F0F /* Products */;
 			projectDirPath = "";
@@ -570,6 +607,66 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		72E1DAE42FC8A9A900747F0F /* XCLocalSwiftPackageReference "Packages/Alignment" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/Alignment;
+		};
+		72E1DAE52FC8A9B400747F0F /* XCLocalSwiftPackageReference "Packages/EPUBKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/EPUBKit;
+		};
+		72E1DAE62FC8A9C200747F0F /* XCLocalSwiftPackageReference "Packages/ImportUI" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/ImportUI;
+		};
+		72E1DAE72FC8A9CF00747F0F /* XCLocalSwiftPackageReference "Packages/LibraryStore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/LibraryStore;
+		};
+		72E1DAE82FC8A9D900747F0F /* XCLocalSwiftPackageReference "Packages/ReaderUI" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/ReaderUI;
+		};
+		72E1DAE92FC8A9E100747F0F /* XCLocalSwiftPackageReference "Packages/TTSService" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/TTSService;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		72E1DAEB2FC8AA1400747F0F /* Alignment */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 72E1DAE42FC8A9A900747F0F /* XCLocalSwiftPackageReference "Packages/Alignment" */;
+			productName = Alignment;
+		};
+		72E1DAED2FC8AA1400747F0F /* EPUBKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 72E1DAE52FC8A9B400747F0F /* XCLocalSwiftPackageReference "Packages/EPUBKit" */;
+			productName = EPUBKit;
+		};
+		72E1DAEF2FC8AA1400747F0F /* ImportUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 72E1DAE62FC8A9C200747F0F /* XCLocalSwiftPackageReference "Packages/ImportUI" */;
+			productName = ImportUI;
+		};
+		72E1DAF12FC8AA1400747F0F /* LibraryStore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 72E1DAE72FC8A9CF00747F0F /* XCLocalSwiftPackageReference "Packages/LibraryStore" */;
+			productName = LibraryStore;
+		};
+		72E1DAF32FC8AA1400747F0F /* ReaderUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 72E1DAE82FC8A9D900747F0F /* XCLocalSwiftPackageReference "Packages/ReaderUI" */;
+			productName = ReaderUI;
+		};
+		72E1DAF52FC8AA1400747F0F /* TTSService */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 72E1DAE92FC8A9E100747F0F /* XCLocalSwiftPackageReference "Packages/TTSService" */;
+			productName = TTSService;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 72E1DAB02FC8936D00747F0F /* Project object */;
 }

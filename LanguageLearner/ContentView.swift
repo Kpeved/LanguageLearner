@@ -1,61 +1,122 @@
-//
-//  ContentView.swift
-//  LanguageLearner
-//
-//  Created by Michail Kulaga on 28.05.2026.
-//
-
 import SwiftUI
 import SwiftData
+import UIKit
+import LibraryStore
+import TTSService
+import ReaderUI
+import ImportUI
 
-struct ContentView: View {
-    @Environment(\.modelContext) private var modelContext
-    @Query private var items: [Item]
+struct LibraryRootView: View {
+    let store: any LibraryStore
+    let tts: any TTSService
+
+    @Query(sort: \PairedEntry.createdAt, order: .reverse)
+    private var entries: [PairedEntry]
+
+    @State private var presentingImport = false
 
     var body: some View {
-        NavigationSplitView {
-            List {
-                ForEach(items) { item in
-                    NavigationLink {
-                        Text("Item at \(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))")
-                    } label: {
-                        Text(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))
+        NavigationStack {
+            Group {
+                if entries.isEmpty {
+                    ContentUnavailableView(
+                        "No paired books yet",
+                        systemImage: "books.vertical",
+                        description: Text("Tap + to import a target + native EPUB pair.")
+                    )
+                } else {
+                    List {
+                        ForEach(entries) { entry in
+                            NavigationLink {
+                                ReaderView(entryID: entry.id, store: store, tts: tts)
+                            } label: {
+                                LibraryRow(entry: entry)
+                            }
+                        }
+                        .onDelete(perform: deleteEntries)
                     }
                 }
-                .onDelete(perform: deleteItems)
             }
+            .navigationTitle("Library")
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    EditButton()
-                }
-                ToolbarItem {
-                    Button(action: addItem) {
-                        Label("Add Item", systemImage: "plus")
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        presentingImport = true
+                    } label: {
+                        Label("New Library Entry", systemImage: "plus")
                     }
+                    .accessibilityLabel("New Library Entry")
                 }
             }
-        } detail: {
-            Text("Select an item")
+            .sheet(isPresented: $presentingImport) {
+                ImportFlowView(
+                    store: store,
+                    onComplete: { _ in
+                        presentingImport = false
+                    },
+                    onCancel: {
+                        presentingImport = false
+                    }
+                )
+            }
         }
     }
 
-    private func addItem() {
-        withAnimation {
-            let newItem = Item(timestamp: Date())
-            modelContext.insert(newItem)
-        }
-    }
-
-    private func deleteItems(offsets: IndexSet) {
-        withAnimation {
-            for index in offsets {
-                modelContext.delete(items[index])
+    private func deleteEntries(at offsets: IndexSet) {
+        let targets = offsets.map { entries[$0].id }
+        Task {
+            for id in targets {
+                try? await store.deleteEntry(id)
             }
         }
     }
 }
 
-#Preview {
-    ContentView()
-        .modelContainer(for: Item.self, inMemory: true)
+private struct LibraryRow: View {
+    let entry: PairedEntry
+
+    var body: some View {
+        HStack(spacing: 12) {
+            cover
+                .frame(width: 48, height: 64)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.targetBook.title)
+                    .font(.headline)
+                    .lineLimit(2)
+                if let author = entry.targetBook.author, !author.isEmpty {
+                    Text(author)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Text(languagePair)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private var cover: some View {
+        if let data = entry.targetBook.coverPNG, let image = UIImage(data: data) {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+        } else {
+            RoundedRectangle(cornerRadius: 4)
+                .fill(Color.secondary.opacity(0.18))
+                .overlay {
+                    Image(systemName: "book.closed")
+                        .foregroundStyle(.secondary)
+                }
+        }
+    }
+
+    private var languagePair: String {
+        let target = entry.targetBook.language.isEmpty ? "?" : entry.targetBook.language
+        let native = entry.nativeBook.language.isEmpty ? "?" : entry.nativeBook.language
+        return "\(target) -> \(native)"
+    }
 }
