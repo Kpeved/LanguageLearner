@@ -55,6 +55,12 @@ private final class FakeLibraryStore: LibraryStore, @unchecked Sendable {
     func chapterOffset(forEntry id: PairedEntryID) async throws -> Int { 0 }
     func updateChapterOffset(_ offset: Int, forEntry id: PairedEntryID) async throws {}
     func chapterTitles(forBook id: UUID) async throws -> [String?] { [] }
+    func paragraphAlignment(forEntry id: PairedEntryID) async throws -> ParagraphAlignmentTable? { nil }
+    func updateParagraphAlignment(_ table: ParagraphAlignmentTable?, forEntry id: PairedEntryID) async throws {}
+    func alignmentDiagnostics(forEntry id: PairedEntryID) async throws -> AlignmentDiagnostics? { nil }
+    func updateAlignmentDiagnostics(_ diagnostics: AlignmentDiagnostics?, forEntry id: PairedEntryID) async throws {}
+    func recomputeAlignment(forEntry id: PairedEntryID) async throws {}
+    func alignChapter(forEntry id: PairedEntryID, targetChapterIndex: Int) async throws {}
 }
 
 // MARK: - ImportPhase Equatable tests

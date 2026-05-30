@@ -50,6 +50,29 @@ public protocol LibraryStore: Sendable {
 
     /// Returns chapter titles for the given book (one per chapter, in spine order).
     func chapterTitles(forBook id: UUID) async throws -> [String?]
+
+    /// Returns the precomputed per-paragraph alignment table for the given entry,
+    /// or nil if none was computed (e.g. embedding model unavailable for the language).
+    func paragraphAlignment(forEntry id: PairedEntryID) async throws -> ParagraphAlignmentTable?
+
+    /// Persists a new alignment table for the entry. Pass nil to clear.
+    func updateParagraphAlignment(_ table: ParagraphAlignmentTable?, forEntry id: PairedEntryID) async throws
+
+    /// Returns the latest diagnostics snapshot for the entry's background alignment build,
+    /// or nil for legacy entries that predate diagnostics.
+    func alignmentDiagnostics(forEntry id: PairedEntryID) async throws -> AlignmentDiagnostics?
+
+    /// Persists a diagnostics snapshot for the entry. Pass nil to clear.
+    func updateAlignmentDiagnostics(_ diagnostics: AlignmentDiagnostics?, forEntry id: PairedEntryID) async throws
+
+    /// Re-runs the background paragraph alignment for the whole entry using its current
+    /// chapter offset. Returns immediately; outcome surfaces via `alignmentDiagnostics`.
+    func recomputeAlignment(forEntry id: PairedEntryID) async throws
+
+    /// Aligns one target chapter's paragraphs against its paired native chapter
+    /// (`targetChapterIndex + chapterOffset`) and merges the result into the stored table.
+    /// Awaits completion. This is the manual, per-chapter alignment path.
+    func alignChapter(forEntry id: PairedEntryID, targetChapterIndex: Int) async throws
 }
 
 /// Concrete, production implementation of `LibraryStore`.
@@ -125,5 +148,29 @@ public final class DefaultLibraryStore: LibraryStore, @unchecked Sendable {
 
     public func chapterTitles(forBook id: UUID) async throws -> [String?] {
         try await impl.chapterTitles(forBook: id)
+    }
+
+    public func paragraphAlignment(forEntry id: PairedEntryID) async throws -> ParagraphAlignmentTable? {
+        try await impl.paragraphAlignment(forEntry: id)
+    }
+
+    public func updateParagraphAlignment(_ table: ParagraphAlignmentTable?, forEntry id: PairedEntryID) async throws {
+        try await impl.updateParagraphAlignment(table, forEntry: id)
+    }
+
+    public func alignmentDiagnostics(forEntry id: PairedEntryID) async throws -> AlignmentDiagnostics? {
+        try await impl.alignmentDiagnostics(forEntry: id)
+    }
+
+    public func updateAlignmentDiagnostics(_ diagnostics: AlignmentDiagnostics?, forEntry id: PairedEntryID) async throws {
+        try await impl.updateAlignmentDiagnostics(diagnostics, forEntry: id)
+    }
+
+    public func recomputeAlignment(forEntry id: PairedEntryID) async throws {
+        try await impl.recomputeAlignment(forEntry: id)
+    }
+
+    public func alignChapter(forEntry id: PairedEntryID, targetChapterIndex: Int) async throws {
+        try await impl.alignChapter(forEntry: id, targetChapterIndex: targetChapterIndex)
     }
 }

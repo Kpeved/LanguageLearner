@@ -25,6 +25,13 @@ final class ReaderViewModel {
     var panelCentre: ParagraphIndex?
     var isPanelVisible: Bool = false
     var ttsState: TTSState = .idle
+
+    /// Whether playback is active ("play" mode). When false ("pause" mode) tapping a
+    /// paragraph does not speak it. Held in memory only, so it survives paragraph and
+    /// chapter changes within a reading session but resets to `false` (paused) on a new
+    /// session, matching the requested behaviour.
+    var isPlaybackEnabled: Bool = false
+
     var initialScrollTarget: Int = 0
     var targetLanguage: String = ""
     var chapterCount: Int = 0
@@ -33,6 +40,20 @@ final class ReaderViewModel {
     var targetChapterTitles: [String?] = []
     var nativeChapterTitles: [String?] = []
     var loadError: String?
+
+    /// Inclusive range of native-paragraph indices that the tapped target paragraph maps to.
+    /// Set whenever a tap resolves via the alignment table; nil when the proportional
+    /// fallback was used (in which case `panelCentre` still gives a single paragraph).
+    var panelRange: TargetParagraphRange?
+
+    /// Latest snapshot of the background alignment build for this entry. Drives the
+    /// diagnostics sheet so the user can see whether taps use real alignment or the
+    /// proportional fallback, and read any error that occurred.
+    var alignmentDiagnostics: AlignmentDiagnostics?
+
+    /// True when the tap-to-translate mapping is using the embedding alignment table
+    /// rather than the proportional approximation.
+    var isUsingAlignmentTable: Bool { alignmentTable != nil }
 
     var canGoToNextChapter: Bool { currentChapterIndex + 1 < chapterCount }
     var canGoToPreviousChapter: Bool { currentChapterIndex > 0 }
@@ -56,7 +77,9 @@ final class ReaderViewModel {
     private var targetProfile: AlignmentProfile?
     private var nativeProfile: AlignmentProfile?
     private var alignmentPolicy: AlignmentPolicy = .wholeBook
+    private var alignmentTable: ParagraphAlignmentTable?
     private var debounceTask: Task<Void, Never>?
+    private var alignmentPollTask: Task<Void, Never>?
     private let sentenceLocator = SentenceLocator()
 
     // MARK: - Init
@@ -110,9 +133,58 @@ final class ReaderViewModel {
             currentChapter = chapter
 
             await prefetchNativeChapter(forTargetChapterIndex: currentChapterIndex)
+
+            // Try to load the precomputed alignment table; if missing, poll a few times
+            // in the background since it's computed asynchronously at import time.
+            alignmentTable = (try? await store.paragraphAlignment(forEntry: entryID))
+            alignmentDiagnostics = (try? await store.alignmentDiagnostics(forEntry: entryID)) ?? nil
+            if alignmentTable == nil {
+                pollForAlignmentTable()
+            }
         } catch {
             loadError = String(describing: error)
         }
+    }
+
+    private func pollForAlignmentTable() {
+        alignmentPollTask?.cancel()
+        let id = entryID
+        let storeRef = store
+        alignmentPollTask = Task { [weak self] in
+            // Poll every 2 seconds for up to 2 minutes, refreshing diagnostics each tick so
+            // the diagnostics sheet shows live progress and any failure reason.
+            for _ in 0..<60 {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                if Task.isCancelled { return }
+                let table = try? await storeRef.paragraphAlignment(forEntry: id)
+                let diagnostics = (try? await storeRef.alignmentDiagnostics(forEntry: id)) ?? nil
+                await MainActor.run {
+                    if let table { self?.alignmentTable = table }
+                    self?.alignmentDiagnostics = diagnostics
+                }
+                // Stop once the table arrives or the build has reached a terminal phase.
+                if table != nil || diagnostics?.phase == .failed || diagnostics?.phase == .completed {
+                    return
+                }
+            }
+        }
+    }
+
+    /// Re-reads the diagnostics snapshot on demand (used by the diagnostics sheet's refresh).
+    func refreshAlignmentDiagnostics() async {
+        alignmentDiagnostics = (try? await store.alignmentDiagnostics(forEntry: entryID)) ?? nil
+        if alignmentTable == nil {
+            alignmentTable = (try? await store.paragraphAlignment(forEntry: entryID)) ?? nil
+        }
+    }
+
+    /// Triggers a fresh background alignment build for this entry (e.g. to retry a failure),
+    /// then resumes polling so the table and diagnostics update as it completes.
+    func recomputeAlignment() async {
+        alignmentTable = nil
+        try? await store.recomputeAlignment(forEntry: entryID)
+        alignmentDiagnostics = (try? await store.alignmentDiagnostics(forEntry: entryID)) ?? nil
+        pollForAlignmentTable()
     }
 
     private func synthesizeTitlesIfEmpty(_ titles: [String?], count: Int) -> [String?] {
@@ -132,8 +204,24 @@ final class ReaderViewModel {
         tappedSentenceText = sentenceText
 
         guard let tp = targetProfile, let np = nativeProfile else { return }
+
+        // Prefer the precomputed alignment table when it has a usable entry for this
+        // (chapter, paragraph). Falls back to proportional mapping otherwise.
+        if let table = alignmentTable,
+           let range = table.range(forSourceChapter: currentChapterIndex, paragraph: paragraphIndex) {
+            let nativeChapterIndex = currentChapterIndex + chapterOffset
+            let centre = ParagraphIndex(chapterIndex: nativeChapterIndex,
+                                        paragraphIndex: range.start)
+            panelCentre = centre
+            panelRange = range
+            isPanelVisible = true
+            Task { await loadNativeChapterIfNeeded(chapterIndex: nativeChapterIndex) }
+            return
+        }
+
         let centre = DefaultAlignmentEngine.mapParagraph(pIndex, from: tp, to: np, policy: alignmentPolicy, offset: chapterOffset)
         panelCentre = centre
+        panelRange = nil
         isPanelVisible = true
 
         let nativeChapterIndex = centre.chapterIndex
@@ -143,11 +231,16 @@ final class ReaderViewModel {
     }
 
     func dismissPanel() {
+        // Stop any in-flight speech when the panel goes away. Playback mode itself
+        // (`isPlaybackEnabled`) is intentionally left untouched so it persists to the
+        // next selected paragraph.
+        ttsService.stop()
         isPanelVisible = false
         tappedParagraph = nil
         tappedSentenceRange = nil
         tappedSentenceText = nil
         panelCentre = nil
+        panelRange = nil
     }
 
     // MARK: - Chapter navigation
@@ -234,13 +327,34 @@ final class ReaderViewModel {
     // MARK: - Chapter offset (sync)
 
     func setChapterOffset(_ newOffset: Int) async {
+        let changed = newOffset != chapterOffset
         chapterOffset = newOffset
         if let tp = targetProfile, let np = nativeProfile {
             alignmentPolicy = computePolicy(source: tp, target: np, offset: newOffset)
         }
         dismissPanel()
         try? await store.updateChapterOffset(newOffset, forEntry: entryID)
+        if changed {
+            // The store cleared the now-stale paragraph alignment for the new pairing.
+            alignmentTable = nil
+            alignmentDiagnostics = (try? await store.alignmentDiagnostics(forEntry: entryID)) ?? nil
+        }
         await prefetchNativeChapter(forTargetChapterIndex: currentChapterIndex)
+    }
+
+    /// Whether a chapter-level alignment is currently running (drives the button UI).
+    var isAligningChapter: Bool = false
+
+    /// Manually aligns the open chapter's paragraphs against its paired native chapter.
+    /// Fast (one chapter) and offset-aware, so it only runs after chapters are paired.
+    func alignCurrentChapter() async {
+        guard !isAligningChapter else { return }
+        isAligningChapter = true
+        defer { isAligningChapter = false }
+        let chapter = currentChapterIndex
+        try? await store.alignChapter(forEntry: entryID, targetChapterIndex: chapter)
+        alignmentTable = (try? await store.paragraphAlignment(forEntry: entryID)) ?? nil
+        alignmentDiagnostics = (try? await store.alignmentDiagnostics(forEntry: entryID)) ?? nil
     }
 
     private func loadNativeChapterIfNeeded(chapterIndex: Int) async {

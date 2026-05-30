@@ -15,3 +15,8 @@ build/
 
 # Editor
 .vscode/
+
+# Model conversion tooling (build-time only; outputs are hosted as release assets)
+tools/.venv/
+tools/out/
+tools/*.log

@@ -54,6 +54,16 @@ import SwiftData
     /// book has leading content (e.g. a translator preface) absent from the native.
     public var targetChapterOffset: Int = 0
 
+    /// Optional precomputed per-paragraph alignment from target -> native.
+    /// Stored as a binary plist of `ParagraphAlignmentTable`. nil when the import
+    /// was unable to build a table (no embedding model for the language, etc.).
+    public var paragraphAlignmentData: Data?
+
+    /// Optional JSON-encoded `AlignmentDiagnostics` describing the outcome of the
+    /// background alignment build (phase, progress, error reason, mapped counts).
+    /// nil for legacy entries imported before diagnostics existed.
+    public var alignmentDiagnosticsData: Data?
+
     public init(
         id: UUID,
         createdAt: Date,
@@ -62,7 +72,9 @@ import SwiftData
         lastReadChapterIndex: Int,
         lastReadParagraphIndex: Int,
         lastReadScrollFraction: Double,
-        targetChapterOffset: Int = 0
+        targetChapterOffset: Int = 0,
+        paragraphAlignmentData: Data? = nil,
+        alignmentDiagnosticsData: Data? = nil
     ) {
         self.id = id
         self.createdAt = createdAt
@@ -72,5 +84,7 @@ import SwiftData
         self.lastReadParagraphIndex = lastReadParagraphIndex
         self.lastReadScrollFraction = lastReadScrollFraction
         self.targetChapterOffset = targetChapterOffset
+        self.paragraphAlignmentData = paragraphAlignmentData
+        self.alignmentDiagnosticsData = alignmentDiagnosticsData
     }
 }

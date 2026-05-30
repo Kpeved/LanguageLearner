@@ -11,6 +11,7 @@ public struct ReaderView: View {
     @AppStorage("readerUI.voicePromptShown") private var voicePromptShown: Bool = false
     @State private var showVoiceAlert: Bool = false
     @State private var presentingSyncSheet: Bool = false
+    @State private var presentingDiagnostics: Bool = false
 
     public init(entryID: PairedEntryID, store: any LibraryStore, tts: any TTSService) {
         self.entryID = entryID
@@ -34,11 +35,16 @@ public struct ReaderView: View {
                             sentenceRange: range,
                             sentenceText: text
                         )
-                        triggerTTSIfNeeded(text: text)
+                        // Only speak when in "play" mode; in "pause" mode selecting a
+                        // paragraph just opens the panel silently.
+                        if viewModel.isPlaybackEnabled {
+                            triggerTTSIfNeeded(text: text)
+                        }
                     },
                     onScrollPositionChange: { paragraphIndex in
                         viewModel.handleScrollPositionChange(paragraphIndex: paragraphIndex)
-                    }
+                    },
+                    panelVisible: viewModel.isPanelVisible
                 )
             } else if let error = viewModel.loadError {
                 VStack(spacing: 12) {
@@ -71,6 +77,15 @@ public struct ReaderView: View {
         .toolbar {
             ToolbarItem(placement: .automatic) {
                 FontSizeControl(fontPointSize: $settings.fontPointSize)
+            }
+            ToolbarItem(placement: .automatic) {
+                Button {
+                    presentingDiagnostics = true
+                } label: {
+                    Image(systemName: alignmentStatusIcon)
+                        .foregroundStyle(alignmentStatusTint)
+                }
+                .accessibilityLabel("Alignment status")
             }
             ToolbarItemGroup(placement: bottomBarPlacement) {
                 Button {
@@ -140,6 +155,17 @@ public struct ReaderView: View {
                 }
             )
         }
+        .sheet(isPresented: $presentingDiagnostics) {
+            AlignmentDiagnosticsView(
+                diagnostics: viewModel.alignmentDiagnostics,
+                isUsingTable: viewModel.isUsingAlignmentTable,
+                currentChapterNumber: viewModel.currentChapterIndex + 1,
+                onAlignChapter: { await viewModel.alignCurrentChapter() },
+                onRefresh: { await viewModel.refreshAlignmentDiagnostics() },
+                onRecompute: { await viewModel.recomputeAlignment() },
+                onDismiss: { presentingDiagnostics = false }
+            )
+        }
         .task {
             await viewModel.load()
         }
@@ -148,10 +174,20 @@ public struct ReaderView: View {
                 TranslationPanel(
                     nativeChapter: viewModel.nativeWindowChapter,
                     centreParagraphIndex: centre.paragraphIndex,
+                    highlightRange: viewModel.panelRange,
                     settings: $settings,
-                    onReplay: {
-                        if let text = viewModel.tappedSentenceText {
-                            triggerTTSIfNeeded(text: text)
+                    isPlaying: viewModel.isPlaybackEnabled,
+                    onPlayPause: {
+                        if viewModel.isPlaybackEnabled {
+                            // Pause: stop playback and leave the panel open.
+                            viewModel.isPlaybackEnabled = false
+                            viewModel.ttsService.stop()
+                        } else {
+                            // Play: start reading the currently selected paragraph.
+                            viewModel.isPlaybackEnabled = true
+                            if let text = viewModel.tappedSentenceText {
+                                triggerTTSIfNeeded(text: text)
+                            }
                         }
                     },
                     onSync: {
@@ -184,6 +220,25 @@ public struct ReaderView: View {
         #else
         return .automatic
         #endif
+    }
+
+    /// SF Symbol reflecting the alignment build state, shown in the toolbar.
+    private var alignmentStatusIcon: String {
+        switch viewModel.alignmentDiagnostics?.phase {
+        case .completed: return viewModel.isUsingAlignmentTable ? "wand.and.stars" : "wand.and.stars.inverse"
+        case .failed: return "exclamationmark.triangle.fill"
+        case .running, .pending: return "hourglass"
+        case .none: return "wand.and.stars.inverse"
+        }
+    }
+
+    private var alignmentStatusTint: Color {
+        switch viewModel.alignmentDiagnostics?.phase {
+        case .completed: return viewModel.isUsingAlignmentTable ? .green : .orange
+        case .failed: return .red
+        case .running, .pending: return .blue
+        case .none: return .secondary
+        }
     }
 
     private var chapterTitle: String {

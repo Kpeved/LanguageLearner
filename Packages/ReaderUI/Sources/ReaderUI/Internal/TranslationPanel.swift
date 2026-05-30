@@ -8,8 +8,11 @@ struct TranslationPanel: View {
 
     let nativeChapter: EPUBChapter?
     let centreParagraphIndex: Int
+    let highlightRange: TargetParagraphRange?
     @Binding var settings: ReaderSettings
-    let onReplay: () -> Void
+    /// True when in "play" mode (button shows a pause glyph). False when paused.
+    let isPlaying: Bool
+    let onPlayPause: () -> Void
     let onSync: () -> Void
     let onDismiss: () -> Void
 
@@ -44,8 +47,8 @@ struct TranslationPanel: View {
                                     .padding(.vertical, 6)
                                     .background(
                                         RoundedRectangle(cornerRadius: 8)
-                                            .fill(index == centreParagraphIndex
-                                                  ? Color.accentColor.opacity(0.18)
+                                            .fill(isHighlighted(index)
+                                                  ? Color.accentColor.opacity(0.22)
                                                   : Color.clear)
                                     )
                                     .id(index)
@@ -124,15 +127,15 @@ struct TranslationPanel: View {
 
                 Spacer()
 
-                // Replay button (right, prominent)
-                Button(action: onReplay) {
-                    Image(systemName: "arrow.counterclockwise")
+                // Play / pause button (right, prominent)
+                Button(action: onPlayPause) {
+                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
                         .font(.system(size: 18, weight: .semibold))
                         .frame(width: 44, height: 44)
                         .background(Circle().fill(Color.accentColor))
                         .foregroundStyle(.white)
                 }
-                .accessibilityLabel("Replay sentence")
+                .accessibilityLabel(isPlaying ? "Pause" : "Play")
             }
             .padding(.horizontal, 14)
         }
@@ -154,6 +157,13 @@ struct TranslationPanel: View {
                     dragOffset = 0
                 }
             }
+    }
+
+    private func isHighlighted(_ index: Int) -> Bool {
+        if let range = highlightRange {
+            return range.contains(index)
+        }
+        return index == centreParagraphIndex
     }
 
     private var platformBackground: Color {

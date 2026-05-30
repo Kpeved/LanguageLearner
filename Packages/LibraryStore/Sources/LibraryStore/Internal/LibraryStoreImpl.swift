@@ -18,6 +18,10 @@ final class LibraryStoreImpl {
     private let libraryRoot: URL
     private let lru = ChapterLRU(capacity: 16)
 
+    /// In-flight background alignment builds, keyed by entry. A new build for an entry
+    /// cancels any prior one so repeated recomputes don't pile up and contend for CoreML.
+    private var alignmentTasks: [UUID: Task<Void, Never>] = [:]
+
     private static let encoder: JSONEncoder = {
         let e = JSONEncoder()
         e.outputFormatting = .sortedKeys
@@ -145,7 +149,172 @@ final class LibraryStoreImpl {
             throw LibraryError.ioFailure(message: "SwiftData save failed: \(error.localizedDescription)")
         }
 
+        // Paragraph alignment is started manually from the reader (per chapter), after the
+        // user has paired chapters, so it always runs against the correct chapter mapping.
+        // Until then the reader falls back to proportional mapping.
         return entryID
+    }
+
+    /// Compute the paragraph alignment table off the main thread and persist when done.
+    /// Records an `AlignmentDiagnostics` snapshot at every stage (running -> completed/failed)
+    /// so the reader can explain whether a tap used real alignment or proportional fallback.
+    private func startBackgroundAlignment(
+        entryID: UUID,
+        source: [[String]],
+        sourceLanguage: String,
+        targetParagraphs: [[String]],
+        targetLanguage: String,
+        chapterOffset: Int
+    ) {
+        let srcLang = sourceLanguage.isEmpty ? "en" : sourceLanguage
+        let tgtLang = targetLanguage.isEmpty ? "en" : targetLanguage
+        let total = source.count
+        // Use the existing chapter offset (default 0 at import time).
+        let store = self
+
+        // Mark as running synchronously (on the main actor) before the task starts.
+        try? updateAlignmentDiagnostics(
+            AlignmentDiagnostics(
+                phase: .running,
+                progress: 0,
+                sourceLanguage: srcLang,
+                targetLanguage: tgtLang,
+                totalChapters: total,
+                message: "Preparing the embedding model and aligning paragraphs. The first run downloads a ~110 MB model."
+            ),
+            forEntry: entryID
+        )
+        NSLog("[Alignment] START entry=%@ source=%@ target=%@ chapters=%d", entryID.uuidString, srcLang, tgtLang, total)
+
+        // Cancel any previous build for this entry before starting a new one.
+        alignmentTasks[entryID]?.cancel()
+        alignmentTasks[entryID] = Task.detached(priority: .utility) {
+            do {
+                let table = try await DefaultParagraphAligner.buildTable(
+                    source: source,
+                    sourceLanguage: srcLang,
+                    target: targetParagraphs,
+                    targetLanguage: tgtLang,
+                    chapterOffset: chapterOffset,
+                    progress: { p in
+                        Task { await store.updateAlignmentProgress(p, entryID: entryID) }
+                    }
+                )
+                await store.persistAlignment(
+                    entryID: entryID,
+                    table: table,
+                    source: srcLang,
+                    target: tgtLang,
+                    total: total
+                )
+            } catch is CancellationError {
+                // Superseded by a newer build; leave its diagnostics untouched.
+                NSLog("[Alignment] cancelled entry=%@", entryID.uuidString)
+            } catch {
+                let message = Self.describeAlignmentError(error)
+                NSLog("[Alignment] FAILED entry=%@ : %@", entryID.uuidString, message)
+                await store.failAlignment(
+                    entryID: entryID,
+                    message: message,
+                    source: srcLang,
+                    target: tgtLang,
+                    total: total
+                )
+            }
+        }
+    }
+
+    /// Maps a build error to a short, human-readable reason for the diagnostics UI.
+    nonisolated private static func describeAlignmentError(_ error: Error) -> String {
+        if error is CancellationError {
+            return "Cancelled before completion."
+        }
+        if let e = error as? AlignmentRuntimeError {
+            switch e {
+            case .noEmbeddingForLanguage(let lang):
+                return "No on-device embedding model for language '\(lang)'."
+            case .assetsUnavailable(let detail):
+                return "Embedding model assets unavailable: \(detail)"
+            case .embeddingFailed(let detail):
+                return "Embedding failed: \(detail)"
+            case .cancelled:
+                return "Cancelled before completion."
+            }
+        }
+        return error.localizedDescription
+    }
+
+    fileprivate func persistAlignment(
+        entryID: UUID,
+        table: ParagraphAlignmentTable,
+        source: String,
+        target: String,
+        total: Int
+    ) async {
+        try? updateParagraphAlignment(table, forEntry: entryID)
+
+        var alignedChapters = 0
+        var mapped = 0
+        var unmapped = 0
+        for chapter in table.perSourceChapter {
+            var anyMapped = false
+            for entry in chapter {
+                if entry != nil {
+                    mapped += 1
+                    anyMapped = true
+                } else {
+                    unmapped += 1
+                }
+            }
+            if anyMapped { alignedChapters += 1 }
+        }
+        NSLog("[Alignment] DONE entry=%@ alignedChapters=%d/%d mapped=%d unmapped=%d",
+              entryID.uuidString, alignedChapters, total, mapped, unmapped)
+        try? updateAlignmentDiagnostics(
+            AlignmentDiagnostics(
+                phase: .completed,
+                progress: 1,
+                sourceLanguage: source,
+                targetLanguage: target,
+                totalChapters: total,
+                alignedChapters: alignedChapters,
+                mappedParagraphs: mapped,
+                unmappedParagraphs: unmapped,
+                message: mapped == 0 ? "Built a table but matched no paragraphs." : nil
+            ),
+            forEntry: entryID
+        )
+    }
+
+    fileprivate func failAlignment(
+        entryID: UUID,
+        message: String,
+        source: String,
+        target: String,
+        total: Int
+    ) async {
+        try? updateAlignmentDiagnostics(
+            AlignmentDiagnostics(
+                phase: .failed,
+                progress: 0,
+                sourceLanguage: source,
+                targetLanguage: target,
+                totalChapters: total,
+                message: message
+            ),
+            forEntry: entryID
+        )
+    }
+
+    /// Updates only the progress fraction on a running diagnostics snapshot. No-op if the
+    /// snapshot is missing or already terminal.
+    fileprivate func updateAlignmentProgress(_ progress: Double, entryID: UUID) async {
+        guard var current = try? alignmentDiagnostics(forEntry: entryID),
+              current.phase == .running,
+              progress > current.progress else { return }
+        current.progress = progress
+        current.updatedAt = Date()
+        try? updateAlignmentDiagnostics(current, forEntry: entryID)
     }
 
     // MARK: - allEntries
@@ -292,7 +461,14 @@ final class LibraryStoreImpl {
         guard let entry = try fetchEntry(id: id) else {
             throw LibraryError.bookNotFound(id)
         }
-        entry.targetChapterOffset = offset
+        if entry.targetChapterOffset != offset {
+            // Chapter pairing changed: any existing paragraph alignment was computed against
+            // the old pairing and is now stale. Clear it so taps fall back to proportional
+            // (with the correct chapter) until the user re-aligns.
+            entry.targetChapterOffset = offset
+            entry.paragraphAlignmentData = nil
+            entry.alignmentDiagnosticsData = nil
+        }
         try modelContext.save()
     }
 
@@ -303,6 +479,185 @@ final class LibraryStoreImpl {
             throw LibraryError.bookNotFound(id)
         }
         return book.chapterTitles
+    }
+
+    // MARK: - paragraphAlignment
+
+    func paragraphAlignment(forEntry id: PairedEntryID) throws -> ParagraphAlignmentTable? {
+        guard let entry = try fetchEntry(id: id) else {
+            throw LibraryError.bookNotFound(id)
+        }
+        guard let data = entry.paragraphAlignmentData else { return nil }
+        do {
+            return try PropertyListDecoder().decode(ParagraphAlignmentTable.self, from: data)
+        } catch {
+            throw LibraryError.ioFailure(message: "Cannot decode paragraph alignment: \(error.localizedDescription)")
+        }
+    }
+
+    func updateParagraphAlignment(_ table: ParagraphAlignmentTable?, forEntry id: PairedEntryID) throws {
+        guard let entry = try fetchEntry(id: id) else {
+            throw LibraryError.bookNotFound(id)
+        }
+        if let table = table {
+            let encoder = PropertyListEncoder()
+            encoder.outputFormat = .binary
+            do {
+                entry.paragraphAlignmentData = try encoder.encode(table)
+            } catch {
+                throw LibraryError.ioFailure(message: "Cannot encode paragraph alignment: \(error.localizedDescription)")
+            }
+        } else {
+            entry.paragraphAlignmentData = nil
+        }
+        try modelContext.save()
+    }
+
+    // MARK: - recomputeAlignment
+
+    /// Re-runs the background paragraph alignment for an already-imported entry. Loads both
+    /// books' chapters from disk and kicks off the same build path used at import time.
+    /// Useful after a fix to the embedding pipeline, or to retry a failed build.
+    func recomputeAlignment(forEntry id: PairedEntryID) throws {
+        guard let entry = try fetchEntry(id: id) else {
+            throw LibraryError.bookNotFound(id)
+        }
+        let targetBook = entry.targetBook
+        let nativeBook = entry.nativeBook
+
+        let source = try loadAllChapterParagraphs(book: targetBook)
+        let nativeParagraphs = try loadAllChapterParagraphs(book: nativeBook)
+
+        startBackgroundAlignment(
+            entryID: id,
+            source: source,
+            sourceLanguage: targetBook.language,
+            targetParagraphs: nativeParagraphs,
+            targetLanguage: nativeBook.language,
+            chapterOffset: entry.targetChapterOffset
+        )
+    }
+
+    // MARK: - alignChapter
+
+    /// Aligns the paragraphs of a single target chapter against its paired native chapter
+    /// (`targetChapterIndex + targetChapterOffset`) and merges the result into the stored
+    /// table. This is the manual, per-chapter path: it runs only after the user has paired
+    /// chapters, so it always compares the correct chapter on each side. The heavy embedding
+    /// work runs off the main actor.
+    func alignChapter(forEntry id: PairedEntryID, targetChapterIndex: Int) async throws {
+        guard let entry = try fetchEntry(id: id) else {
+            throw LibraryError.bookNotFound(id)
+        }
+        let offset = entry.targetChapterOffset
+        let targetBook = entry.targetBook
+        let nativeBook = entry.nativeBook
+        let totalChapters = targetBook.paragraphCounts.count
+        guard targetChapterIndex >= 0, targetChapterIndex < totalChapters else { return }
+
+        let sourceParagraphs = try loadChapter(
+            ChapterRef(bookID: targetBook.id, chapterIndex: targetChapterIndex)
+        ).paragraphs
+        let nativeIndex = targetChapterIndex + offset
+        let nativeParagraphs: [String]
+        if nativeIndex >= 0, nativeIndex < nativeBook.paragraphCounts.count {
+            nativeParagraphs = try loadChapter(
+                ChapterRef(bookID: nativeBook.id, chapterIndex: nativeIndex)
+            ).paragraphs
+        } else {
+            nativeParagraphs = []
+        }
+        let srcLang = targetBook.language.isEmpty ? "en" : targetBook.language
+        let tgtLang = nativeBook.language.isEmpty ? "en" : nativeBook.language
+
+        NSLog("[Alignment] alignChapter entry=%@ c=%d native=%d srcParas=%d nativeParas=%d",
+              id.uuidString, targetChapterIndex, nativeIndex, sourceParagraphs.count, nativeParagraphs.count)
+
+        do {
+            // One-chapter alignment: the native chapter is already selected, so chapterOffset
+            // is 0 here. Embedding + inference runs off the main actor to keep the UI live.
+            let ranges: [TargetParagraphRange?] = try await Task.detached(priority: .userInitiated) {
+                let table = try await DefaultParagraphAligner.buildTable(
+                    source: [sourceParagraphs],
+                    sourceLanguage: srcLang,
+                    target: [nativeParagraphs],
+                    targetLanguage: tgtLang,
+                    chapterOffset: 0
+                )
+                return table.perSourceChapter.first ?? []
+            }.value
+
+            // Merge this chapter's ranges into the stored table.
+            let existing = (try? paragraphAlignment(forEntry: id)) ?? nil
+            var chapters = existing?.perSourceChapter ?? []
+            while chapters.count < totalChapters { chapters.append([]) }
+            chapters[targetChapterIndex] = ranges
+            try updateParagraphAlignment(ParagraphAlignmentTable(perSourceChapter: chapters), forEntry: id)
+
+            let mapped = ranges.lazy.filter { $0 != nil }.count
+            let alignedChapters = chapters.lazy.filter { $0.contains { $0 != nil } }.count
+            NSLog("[Alignment] alignChapter DONE c=%d mapped=%d/%d", targetChapterIndex, mapped, ranges.count)
+            try? updateAlignmentDiagnostics(
+                AlignmentDiagnostics(
+                    phase: .completed,
+                    progress: 1,
+                    sourceLanguage: srcLang,
+                    targetLanguage: tgtLang,
+                    totalChapters: totalChapters,
+                    alignedChapters: alignedChapters,
+                    mappedParagraphs: mapped,
+                    unmappedParagraphs: ranges.count - mapped,
+                    message: "Aligned chapter \(targetChapterIndex + 1) to native chapter \(nativeIndex + 1)."
+                ),
+                forEntry: id
+            )
+        } catch {
+            let message = Self.describeAlignmentError(error)
+            NSLog("[Alignment] alignChapter FAILED c=%d : %@", targetChapterIndex, message)
+            try? updateAlignmentDiagnostics(
+                AlignmentDiagnostics(
+                    phase: .failed,
+                    sourceLanguage: srcLang,
+                    targetLanguage: tgtLang,
+                    totalChapters: totalChapters,
+                    message: message
+                ),
+                forEntry: id
+            )
+            throw error
+        }
+    }
+
+    private func loadAllChapterParagraphs(book: Book) throws -> [[String]] {
+        var result: [[String]] = []
+        result.reserveCapacity(book.paragraphCounts.count)
+        for index in 0..<book.paragraphCounts.count {
+            let chapter = try loadChapter(ChapterRef(bookID: book.id, chapterIndex: index))
+            result.append(chapter.paragraphs)
+        }
+        return result
+    }
+
+    // MARK: - alignmentDiagnostics
+
+    func alignmentDiagnostics(forEntry id: PairedEntryID) throws -> AlignmentDiagnostics? {
+        guard let entry = try fetchEntry(id: id) else {
+            throw LibraryError.bookNotFound(id)
+        }
+        guard let data = entry.alignmentDiagnosticsData else { return nil }
+        return try? Self.decoder.decode(AlignmentDiagnostics.self, from: data)
+    }
+
+    func updateAlignmentDiagnostics(_ diagnostics: AlignmentDiagnostics?, forEntry id: PairedEntryID) throws {
+        guard let entry = try fetchEntry(id: id) else {
+            throw LibraryError.bookNotFound(id)
+        }
+        if let diagnostics = diagnostics {
+            entry.alignmentDiagnosticsData = try? Self.encoder.encode(diagnostics)
+        } else {
+            entry.alignmentDiagnosticsData = nil
+        }
+        try modelContext.save()
     }
 
     // MARK: - Private helpers

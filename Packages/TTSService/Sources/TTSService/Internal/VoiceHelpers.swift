@@ -91,5 +91,14 @@ func bestInstalledVoice(forLanguage tag: String) -> TTSVoice? {
             quality: voiceQuality(fromRawValue: av.quality.rawValue)
         )
     }
+    // Honour the voice the user picked in Settings > Accessibility > Spoken Content > Voices.
+    // `AVSpeechSynthesisVoice(language:)` returns that user-selected default for the language,
+    // so we prefer it over our own highest-quality heuristic. Without this, changing the
+    // selected premium voice in Settings has no effect because `selectBestVoice` keeps
+    // returning whichever same-quality voice it happens to rank first.
+    if let systemDefault = AVSpeechSynthesisVoice(language: tag),
+       let match = candidates.first(where: { $0.identifier == systemDefault.identifier }) {
+        return match
+    }
     return selectBestVoice(from: candidates, language: tag)
 }
