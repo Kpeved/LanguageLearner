@@ -46,6 +46,11 @@ final class ReaderViewModel {
     /// fallback was used (in which case `panelCentre` still gives a single paragraph).
     var panelRange: TargetParagraphRange?
 
+    /// Native sentence(s) the tapped target sentence maps to, computed by the fine
+    /// sentence-alignment layer. Empty while the refinement is still running (in which
+    /// case the panel falls back to highlighting the whole `panelRange` paragraphs).
+    var nativeSentenceHighlights: [SentenceHighlight] = []
+
     /// Latest snapshot of the background alignment build for this entry. Drives the
     /// diagnostics sheet so the user can see whether taps use real alignment or the
     /// proportional fallback, and read any error that occurred.
@@ -80,6 +85,11 @@ final class ReaderViewModel {
     private var alignmentTable: ParagraphAlignmentTable?
     private var debounceTask: Task<Void, Never>?
     private var alignmentPollTask: Task<Void, Never>?
+    private var sentenceRefineTask: Task<Void, Never>?
+    /// Per-source-paragraph cache of the sentence-to-native-sentence alignment, so
+    /// tapping different sentences in the same paragraph reuses one embedding pass.
+    /// Cleared when the chapter or chapter offset changes (which invalidates the basis).
+    private var sentenceRefineCache: [Int: [TargetParagraphRange?]] = [:]
     private let sentenceLocator = SentenceLocator()
 
     // MARK: - Init
@@ -202,6 +212,8 @@ final class ReaderViewModel {
         tappedParagraph = pIndex
         tappedSentenceRange = sentenceRange
         tappedSentenceText = sentenceText
+        // Clear any prior sentence highlight; the refinement below repopulates it.
+        nativeSentenceHighlights = []
 
         guard let tp = targetProfile, let np = nativeProfile else { return }
 
@@ -216,6 +228,10 @@ final class ReaderViewModel {
             panelRange = range
             isPanelVisible = true
             Task { await loadNativeChapterIfNeeded(chapterIndex: nativeChapterIndex) }
+            startSentenceRefinement(targetParagraphIndex: paragraphIndex,
+                                    tappedSentenceRange: sentenceRange,
+                                    nativeChapterIndex: nativeChapterIndex,
+                                    nativeRange: range)
             return
         }
 
@@ -228,6 +244,13 @@ final class ReaderViewModel {
         Task {
             await loadNativeChapterIfNeeded(chapterIndex: nativeChapterIndex)
         }
+        // No paragraph range from the table here; refine within the single mapped
+        // native paragraph so the highlight still narrows to a sentence.
+        startSentenceRefinement(targetParagraphIndex: paragraphIndex,
+                                tappedSentenceRange: sentenceRange,
+                                nativeChapterIndex: nativeChapterIndex,
+                                nativeRange: TargetParagraphRange(start: centre.paragraphIndex,
+                                                                  end: centre.paragraphIndex))
     }
 
     func dismissPanel() {
@@ -235,12 +258,14 @@ final class ReaderViewModel {
         // (`isPlaybackEnabled`) is intentionally left untouched so it persists to the
         // next selected paragraph.
         ttsService.stop()
+        sentenceRefineTask?.cancel()
         isPanelVisible = false
         tappedParagraph = nil
         tappedSentenceRange = nil
         tappedSentenceText = nil
         panelCentre = nil
         panelRange = nil
+        nativeSentenceHighlights = []
     }
 
     // MARK: - Chapter navigation
@@ -271,6 +296,7 @@ final class ReaderViewModel {
             currentChapter = chapter
             currentChapterIndex = chapterIndex
             initialScrollTarget = 0
+            sentenceRefineCache.removeAll()
             dismissPanel()
             let pos = LastReadPosition(
                 chapterIndex: chapterIndex,
@@ -337,6 +363,7 @@ final class ReaderViewModel {
         if changed {
             // The store cleared the now-stale paragraph alignment for the new pairing.
             alignmentTable = nil
+            sentenceRefineCache.removeAll()
             alignmentDiagnostics = (try? await store.alignmentDiagnostics(forEntry: entryID)) ?? nil
         }
         await prefetchNativeChapter(forTargetChapterIndex: currentChapterIndex)
@@ -368,6 +395,115 @@ final class ReaderViewModel {
             nativeWindowChapter = chapter
         }
     }
+
+    // MARK: - Sentence refinement
+
+    /// Refines the coarse paragraph mapping down to the native sentence(s) that match the
+    /// tapped target sentence. The panel shows the paragraph-range highlight immediately;
+    /// this upgrades it to a sentence highlight once the (cheap, bounded) embedding pass
+    /// over just this paragraph's sentences completes.
+    private func startSentenceRefinement(targetParagraphIndex: Int,
+                                         tappedSentenceRange: NSRange,
+                                         nativeChapterIndex: Int,
+                                         nativeRange: TargetParagraphRange) {
+        sentenceRefineTask?.cancel()
+        guard let targetParas = currentChapter?.paragraphs,
+              targetParagraphIndex < targetParas.count else { return }
+        let targetText = targetParas[targetParagraphIndex]
+        let sourceSentenceRanges = SentenceLocator.buildSentenceRanges(for: targetText)
+        guard !sourceSentenceRanges.isEmpty else { return }
+        let tappedSentenceIndex = sourceSentenceRanges.firstIndex {
+            NSLocationInRange(tappedSentenceRange.location, $0)
+        } ?? sourceSentenceRanges.firstIndex { $0.location == tappedSentenceRange.location } ?? 0
+
+        sentenceRefineTask = Task { [weak self] in
+            await self?.performSentenceRefinement(
+                targetParagraphIndex: targetParagraphIndex,
+                targetText: targetText,
+                sourceSentenceRanges: sourceSentenceRanges,
+                tappedSentenceIndex: tappedSentenceIndex,
+                nativeChapterIndex: nativeChapterIndex,
+                nativeRange: nativeRange
+            )
+        }
+    }
+
+    private func performSentenceRefinement(targetParagraphIndex: Int,
+                                           targetText: String,
+                                           sourceSentenceRanges: [NSRange],
+                                           tappedSentenceIndex: Int,
+                                           nativeChapterIndex: Int,
+                                           nativeRange: TargetParagraphRange) async {
+        await loadNativeChapterIfNeeded(chapterIndex: nativeChapterIndex)
+        guard !Task.isCancelled,
+              let nativeParas = nativeWindowChapter?.paragraphs,
+              panelCentre?.chapterIndex == nativeChapterIndex else { return }
+
+        let start = max(0, nativeRange.start)
+        let end = min(nativeParas.count - 1, nativeRange.end)
+        guard start <= end else { return }
+
+        // Flatten the native range into a sentence list, keeping each sentence's home
+        // paragraph and in-paragraph character range so we can highlight it later.
+        var nativeSentenceTexts: [String] = []
+        var provenance: [SentenceHighlight] = []
+        for p in start...end {
+            let paragraphText = nativeParas[p]
+            let ns = paragraphText as NSString
+            for r in SentenceLocator.buildSentenceRanges(for: paragraphText) {
+                nativeSentenceTexts.append(ns.substring(with: r))
+                provenance.append(SentenceHighlight(paragraphIndex: p, range: r))
+            }
+        }
+        guard !nativeSentenceTexts.isEmpty else { return }
+
+        let sourceTexts = sourceSentenceRanges.map { (targetText as NSString).substring(with: $0) }
+
+        let alignment: [TargetParagraphRange?]
+        if let cached = sentenceRefineCache[targetParagraphIndex] {
+            alignment = cached
+        } else {
+            let computed = try? await SentenceAligner.align(source: sourceTexts, target: nativeSentenceTexts)
+            if Task.isCancelled { return }
+            if let computed, computed.count == sourceTexts.count {
+                alignment = computed
+                sentenceRefineCache[targetParagraphIndex] = computed
+            } else {
+                alignment = []
+            }
+        }
+
+        let nativeIndices: [Int]
+        if tappedSentenceIndex < alignment.count, let range = alignment[tappedSentenceIndex] {
+            nativeIndices = Array(range.start...min(range.end, provenance.count - 1))
+        } else {
+            // Proportional fallback: place the tapped sentence at the matching fraction
+            // of the native sentence list when embeddings gave no usable mapping.
+            let denom = max(1, sourceTexts.count - 1)
+            let fraction = Double(tappedSentenceIndex) / Double(denom)
+            let idx = Int((fraction * Double(max(0, nativeSentenceTexts.count - 1))).rounded())
+            nativeIndices = [min(max(0, idx), provenance.count - 1)]
+        }
+
+        let highlights = nativeIndices.compactMap { idx -> SentenceHighlight? in
+            guard idx >= 0, idx < provenance.count else { return nil }
+            return provenance[idx]
+        }
+        guard !highlights.isEmpty, !Task.isCancelled else { return }
+
+        nativeSentenceHighlights = highlights
+        if let first = highlights.first {
+            panelCentre = ParagraphIndex(chapterIndex: nativeChapterIndex,
+                                         paragraphIndex: first.paragraphIndex)
+        }
+    }
+}
+
+/// A sentence to highlight inside the native chapter: which paragraph, and the character
+/// range within that paragraph's text.
+struct SentenceHighlight: Equatable, Sendable {
+    let paragraphIndex: Int
+    let range: NSRange
 }
 
 // MARK: - TTS State

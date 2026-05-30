@@ -9,6 +9,10 @@ struct TranslationPanel: View {
     let nativeChapter: EPUBChapter?
     let centreParagraphIndex: Int
     let highlightRange: TargetParagraphRange?
+    /// Sentence-level highlights resolved by the fine alignment layer. When non-empty,
+    /// only these sub-paragraph ranges are highlighted; otherwise the panel falls back to
+    /// tinting the whole `highlightRange` paragraphs while the refinement is still running.
+    let sentenceHighlights: [SentenceHighlight]
     @Binding var settings: ReaderSettings
     /// True when in "play" mode (button shows a pause glyph). False when paused.
     let isPlaying: Bool
@@ -40,14 +44,14 @@ struct TranslationPanel: View {
                     LazyVStack(alignment: .leading, spacing: 10) {
                         if let chapter = nativeChapter {
                             ForEach(Array(chapter.paragraphs.enumerated()), id: \.offset) { index, text in
-                                Text(text)
+                                Text(paragraphText(text, paragraphIndex: index))
                                     .font(.system(size: 15))
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .padding(.horizontal, 14)
                                     .padding(.vertical, 6)
                                     .background(
                                         RoundedRectangle(cornerRadius: 8)
-                                            .fill(isHighlighted(index)
+                                            .fill(paragraphTint(index)
                                                   ? Color.accentColor.opacity(0.22)
                                                   : Color.clear)
                                     )
@@ -159,11 +163,33 @@ struct TranslationPanel: View {
             }
     }
 
-    private func isHighlighted(_ index: Int) -> Bool {
+    /// Whole-paragraph tint, used only as the pre-refinement fallback. Once sentence
+    /// highlights exist they carry the emphasis instead, so the paragraph tint is dropped.
+    private func paragraphTint(_ index: Int) -> Bool {
+        guard sentenceHighlights.isEmpty else { return false }
         if let range = highlightRange {
             return range.contains(index)
         }
         return index == centreParagraphIndex
+    }
+
+    /// Builds the paragraph's display string, drawing a background behind any sentence
+    /// ranges resolved for this paragraph.
+    private func paragraphText(_ text: String, paragraphIndex: Int) -> AttributedString {
+        var attributed = AttributedString(text)
+        let ranges = sentenceHighlights
+            .filter { $0.paragraphIndex == paragraphIndex }
+            .map(\.range)
+        let nsText = text as NSString
+        for range in ranges {
+            guard range.location != NSNotFound,
+                  NSMaxRange(range) <= nsText.length,
+                  let stringRange = Range(range, in: text),
+                  let lower = AttributedString.Index(stringRange.lowerBound, within: attributed),
+                  let upper = AttributedString.Index(stringRange.upperBound, within: attributed) else { continue }
+            attributed[lower..<upper].backgroundColor = Color.accentColor.opacity(0.30)
+        }
+        return attributed
     }
 
     private var platformBackground: Color {

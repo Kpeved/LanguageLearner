@@ -175,6 +175,7 @@ public struct ReaderView: View {
                     nativeChapter: viewModel.nativeWindowChapter,
                     centreParagraphIndex: centre.paragraphIndex,
                     highlightRange: viewModel.panelRange,
+                    sentenceHighlights: viewModel.nativeSentenceHighlights,
                     settings: $settings,
                     isPlaying: viewModel.isPlaybackEnabled,
                     onPlayPause: {
