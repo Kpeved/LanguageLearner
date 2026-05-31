@@ -117,8 +117,11 @@ struct SelectableParagraphTextView: UIViewRepresentable {
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
         let width = proposal.width ?? uiView.bounds.width
         guard width > 0, width.isFinite else { return nil }
-        let fitting = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
-        return CGSize(width: width, height: ceil(fitting.height))
+        // Height only depends on (text, width, font). Cache it so a SwiftUI layout pass
+        // that re-proposes many paragraphs during scroll does not re-shape every one with
+        // CoreText on the main thread, which is what froze the reader.
+        let height = ParagraphSizer.shared.height(text: text, width: width, fontPointSize: fontPointSize)
+        return CGSize(width: width, height: height)
     }
 
     func makeCoordinator() -> Coordinator {
@@ -140,6 +143,14 @@ struct SelectableParagraphTextView: UIViewRepresentable {
         /// selection highlight directly on the text view.
         private(set) var isDragging = false
         private var anchorWord: NSRange?
+
+        /// Snapshot of the inputs the text view was last rendered with, so a redundant
+        /// `updateUIView` (common during scroll, when the parent re-evaluates) does not reset
+        /// `attributedText` and invalidate the text layout for nothing.
+        private var renderedText: String?
+        private var renderedFont: Double = 0
+        private var renderedSentence: NSRange?
+        private var renderedWord: NSRange?
         /// Scroll view disabled for the duration of a drag so selection doesn't fight scroll.
         private weak var lockedScrollView: UIScrollView?
 
@@ -156,6 +167,19 @@ struct SelectableParagraphTextView: UIViewRepresentable {
         // MARK: - Rendering
 
         func render(into textView: UITextView) {
+            // Skip if nothing that affects the drawn text changed since the last render.
+            if textView.attributedText.length > 0,
+               renderedText == text,
+               renderedFont == fontPointSize,
+               rangesEqual(renderedSentence, sentenceHighlight),
+               rangesEqual(renderedWord, wordSelection) {
+                return
+            }
+            renderedText = text
+            renderedFont = fontPointSize
+            renderedSentence = sentenceHighlight
+            renderedWord = wordSelection
+
             let nsText = text as NSString
             let attributed = NSMutableAttributedString(
                 string: text,
@@ -293,6 +317,46 @@ struct SelectableParagraphTextView: UIViewRepresentable {
             lockedScrollView?.isScrollEnabled = true
             lockedScrollView = nil
         }
+
+        private func rangesEqual(_ a: NSRange?, _ b: NSRange?) -> Bool {
+            switch (a, b) {
+            case (nil, nil): return true
+            case let (l?, r?): return NSEqualRanges(l, r)
+            default: return false
+            }
+        }
+    }
+}
+
+/// Caches paragraph heights keyed by (text, width, font) and measures cache misses with a
+/// single reusable, off-screen `UITextView` configured exactly like the on-screen ones.
+/// Measurement is the expensive part (CoreText line breaking + glyph shaping); doing it once
+/// per paragraph instead of on every layout pass is what keeps scrolling smooth.
+@MainActor
+final class ParagraphSizer {
+    static let shared = ParagraphSizer()
+
+    private let measuringView: UITextView = {
+        let tv = UITextView()
+        tv.isScrollEnabled = false
+        tv.isEditable = false
+        tv.textContainerInset = .zero
+        tv.textContainer.lineFragmentPadding = 0
+        return tv
+    }()
+    private let cache = NSCache<NSString, NSNumber>()
+
+    func height(text: String, width: CGFloat, fontPointSize: Double) -> CGFloat {
+        let key = "\(Int(fontPointSize.rounded()))|\(Int(width.rounded()))|\(text)" as NSString
+        if let cached = cache.object(forKey: key) {
+            return CGFloat(cached.doubleValue)
+        }
+        measuringView.font = UIFont.systemFont(ofSize: fontPointSize)
+        measuringView.text = text
+        let fitting = measuringView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        let height = ceil(fitting.height)
+        cache.setObject(NSNumber(value: Double(height)), forKey: key)
+        return height
     }
 }
 #endif

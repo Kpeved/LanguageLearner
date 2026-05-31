@@ -26,6 +26,7 @@ public struct ReaderView: View {
         Group {
             if let chapter = viewModel.currentChapter {
                 ChapterScrollView(
+                    chapterID: viewModel.currentChapterIndex,
                     paragraphs: chapter.paragraphs,
                     tappedParagraphIndex: viewModel.tappedParagraph?.paragraphIndex,
                     tappedSentenceRange: viewModel.tappedSentenceRange,
