@@ -12,6 +12,8 @@ public struct ReaderView: View {
     @State private var showVoiceAlert: Bool = false
     @State private var presentingSyncSheet: Bool = false
     @State private var presentingDiagnostics: Bool = false
+    /// Reader content frame in global coordinates, used to place the word-translation balloon.
+    @State private var readerFrame: CGRect = .zero
 
     public init(entryID: PairedEntryID, store: any LibraryStore, tts: any TTSService) {
         self.entryID = entryID
@@ -27,6 +29,8 @@ public struct ReaderView: View {
                     paragraphs: chapter.paragraphs,
                     tappedParagraphIndex: viewModel.tappedParagraph?.paragraphIndex,
                     tappedSentenceRange: viewModel.tappedSentenceRange,
+                    wordSelectionParagraphIndex: viewModel.selectedWordParagraphIndex,
+                    wordSelectionRange: viewModel.selectedWordRange,
                     fontPointSize: settings.fontPointSize,
                     scrollTarget: viewModel.initialScrollTarget,
                     onSentenceTap: { paragraphIndex, range, text in
@@ -40,6 +44,14 @@ public struct ReaderView: View {
                         if viewModel.isPlaybackEnabled {
                             triggerTTSIfNeeded(text: text)
                         }
+                    },
+                    onWordSelection: { paragraphIndex, range, text, rect in
+                        viewModel.handleWordSelection(
+                            paragraphIndex: paragraphIndex,
+                            range: range,
+                            text: text,
+                            anchor: rect
+                        )
                     },
                     onScrollPositionChange: { paragraphIndex in
                         viewModel.handleScrollPositionChange(paragraphIndex: paragraphIndex)
@@ -198,6 +210,29 @@ public struct ReaderView: View {
                     onDismiss: { viewModel.dismissPanel() }
                 )
                 .transition(.move(edge: .bottom))
+            }
+        }
+        .background(
+            GeometryReader { geo in
+                Color.clear
+                    .onAppear { readerFrame = geo.frame(in: .global) }
+                    .onChange(of: geo.frame(in: .global)) { _, frame in
+                        readerFrame = frame
+                    }
+            }
+        )
+        .overlay {
+            if let text = viewModel.selectedWordText,
+               let anchor = viewModel.selectedWordAnchor {
+                WordTranslationBalloon(
+                    text: text,
+                    sourceLanguage: viewModel.targetLanguage,
+                    targetLanguage: viewModel.nativeLanguage,
+                    anchorInGlobal: anchor,
+                    containerFrame: readerFrame,
+                    onClose: { viewModel.dismissWordBalloon() }
+                )
+                .id(text)
             }
         }
         .animation(.easeInOut(duration: 0.25), value: viewModel.isPanelVisible)

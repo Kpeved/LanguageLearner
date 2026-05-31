@@ -7,9 +7,15 @@ struct ChapterScrollView: View {
     let paragraphs: [String]
     let tappedParagraphIndex: Int?
     let tappedSentenceRange: NSRange?
+    /// Paragraph that currently owns a finalised word selection, and its range.
+    let wordSelectionParagraphIndex: Int?
+    let wordSelectionRange: NSRange?
     let fontPointSize: Double
     let scrollTarget: Int
     let onSentenceTap: (Int, NSRange, String) -> Void
+    /// Reports a finalised word selection: paragraph index, character range, selected text,
+    /// and the selection's bounding rect in global coordinates.
+    let onWordSelection: (Int, NSRange, String, CGRect) -> Void
     let onScrollPositionChange: (Int) -> Void
     var panelVisible: Bool = false
 
@@ -27,9 +33,13 @@ struct ChapterScrollView: View {
                             text: text,
                             isTapped: tappedParagraphIndex == index,
                             tappedSentenceRange: tappedParagraphIndex == index ? tappedSentenceRange : nil,
+                            wordHighlightRange: wordSelectionParagraphIndex == index ? wordSelectionRange : nil,
                             fontPointSize: fontPointSize,
                             onSentenceTap: { range, sentenceText in
                                 onSentenceTap(index, range, sentenceText)
+                            },
+                            onWordSelection: { range, selectedText, rect in
+                                onWordSelection(index, range, selectedText, rect)
                             }
                         )
                         .id(index)
@@ -119,16 +129,20 @@ private struct ParagraphView: View {
     let text: String
     let isTapped: Bool
     let tappedSentenceRange: NSRange?
+    let wordHighlightRange: NSRange?
     let fontPointSize: Double
     let onSentenceTap: (NSRange, String) -> Void
+    let onWordSelection: (NSRange, String, CGRect) -> Void
 
     var body: some View {
         SentenceTapOverlay(
             text: text,
             paragraphIndex: index,
             tappedSentenceRange: tappedSentenceRange,
+            wordHighlightRange: wordHighlightRange,
             fontPointSize: fontPointSize,
-            onSentenceTap: onSentenceTap
+            onSentenceTap: onSentenceTap,
+            onWordSelection: onWordSelection
         )
     }
 }

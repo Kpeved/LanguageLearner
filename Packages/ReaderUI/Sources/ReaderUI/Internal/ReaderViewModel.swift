@@ -34,6 +34,8 @@ final class ReaderViewModel {
 
     var initialScrollTarget: Int = 0
     var targetLanguage: String = ""
+    /// Language of the native (second) book, used as the target for word translation.
+    var nativeLanguage: String = ""
     var chapterCount: Int = 0
     var currentChapterIndex: Int = 0
     var chapterOffset: Int = 0
@@ -45,6 +47,17 @@ final class ReaderViewModel {
     /// Set whenever a tap resolves via the alignment table; nil when the proportional
     /// fallback was used (in which case `panelCentre` still gives a single paragraph).
     var panelRange: TargetParagraphRange?
+
+    // MARK: - Word translation balloon
+
+    /// The selected word or phrase to translate, or nil when no balloon is shown.
+    var selectedWordText: String?
+    /// Paragraph that owns the current word selection (drives which paragraph tints it).
+    var selectedWordParagraphIndex: Int?
+    /// Character range of the current word selection within its paragraph.
+    var selectedWordRange: NSRange?
+    /// Selection bounding rect in global coordinates, used to place the balloon.
+    var selectedWordAnchor: CGRect?
 
     /// Native sentence(s) the tapped target sentence maps to, computed by the fine
     /// sentence-alignment layer. Empty while the refinement is still running (in which
@@ -135,6 +148,7 @@ final class ReaderViewModel {
             let entries = try await store.allEntries()
             if let entry = entries.first(where: { $0.id == entryID }) {
                 targetLanguage = entry.targetLanguage
+                nativeLanguage = entry.nativeLanguage
             }
 
             let chapter = try await store.loadChapter(
@@ -253,6 +267,26 @@ final class ReaderViewModel {
                                                                   end: centre.paragraphIndex))
     }
 
+    // MARK: - Word translation
+
+    /// Records a finalised long-press word/phrase selection so the balloon can show its
+    /// offline translation. Independent of the bottom paragraph panel.
+    func handleWordSelection(paragraphIndex: Int, range: NSRange, text: String, anchor: CGRect) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        selectedWordParagraphIndex = paragraphIndex
+        selectedWordRange = range
+        selectedWordText = trimmed
+        selectedWordAnchor = anchor
+    }
+
+    func dismissWordBalloon() {
+        selectedWordText = nil
+        selectedWordParagraphIndex = nil
+        selectedWordRange = nil
+        selectedWordAnchor = nil
+    }
+
     func dismissPanel() {
         // Stop any in-flight speech when the panel goes away. Playback mode itself
         // (`isPlaybackEnabled`) is intentionally left untouched so it persists to the
@@ -298,6 +332,7 @@ final class ReaderViewModel {
             initialScrollTarget = 0
             sentenceRefineCache.removeAll()
             dismissPanel()
+            dismissWordBalloon()
             let pos = LastReadPosition(
                 chapterIndex: chapterIndex,
                 paragraphIndex: 0,
