@@ -6,6 +6,38 @@ import TTSService
 import ReaderUI
 import ImportUI
 
+enum AppTheme: String, CaseIterable, Identifiable {
+    case system
+    case light
+    case dark
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .system: return "Device"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .system: return "iphone"
+        case .light: return "sun.max"
+        case .dark: return "moon"
+        }
+    }
+
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+}
+
 struct LibraryRootView: View {
     let store: any LibraryStore
     let tts: any TTSService
@@ -14,6 +46,8 @@ struct LibraryRootView: View {
     private var entries: [PairedEntry]
 
     @State private var presentingImport = false
+    @State private var presentingSettings = false
+    @AppStorage("appTheme") private var appTheme: AppTheme = .system
 
     var body: some View {
         NavigationStack {
@@ -39,6 +73,14 @@ struct LibraryRootView: View {
             }
             .navigationTitle("Library")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        presentingSettings = true
+                    } label: {
+                        Label("Settings", systemImage: "gearshape")
+                    }
+                    .accessibilityLabel("Settings")
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         presentingImport = true
@@ -59,7 +101,11 @@ struct LibraryRootView: View {
                     }
                 )
             }
+            .sheet(isPresented: $presentingSettings) {
+                SettingsView(appTheme: $appTheme)
+            }
         }
+        .preferredColorScheme(appTheme.colorScheme)
     }
 
     private func deleteEntries(at offsets: IndexSet) {
@@ -118,5 +164,33 @@ private struct LibraryRow: View {
         let target = entry.targetBook.language.isEmpty ? "?" : entry.targetBook.language
         let native = entry.nativeBook.language.isEmpty ? "?" : entry.nativeBook.language
         return "\(target) -> \(native)"
+    }
+}
+
+struct SettingsView: View {
+    @Binding var appTheme: AppTheme
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Appearance") {
+                    Picker("Theme", selection: $appTheme) {
+                        ForEach(AppTheme.allCases) { theme in
+                            Label(theme.label, systemImage: theme.systemImage)
+                                .tag(theme)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                }
+            }
+            .navigationTitle("Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
     }
 }
