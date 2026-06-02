@@ -36,6 +36,8 @@ final class ReaderViewModel {
     var targetLanguage: String = ""
     /// Language of the native (second) book, used as the target for word translation.
     var nativeLanguage: String = ""
+    /// Title of the target book, recorded on saved vocabulary cards for context.
+    var bookTitle: String = ""
     var chapterCount: Int = 0
     var currentChapterIndex: Int = 0
     var chapterOffset: Int = 0
@@ -58,6 +60,13 @@ final class ReaderViewModel {
     var selectedWordRange: NSRange?
     /// Selection bounding rect in global coordinates, used to place the balloon.
     var selectedWordAnchor: CGRect?
+    /// The selected text that was most recently saved to the deck, so the balloon can
+    /// show a filled bookmark for it.
+    var lastSavedWordKey: String?
+    /// The native sentence (from the aligned parallel book) that contains the selected
+    /// word. Computed silently when a word is selected and stored on the saved card so
+    /// the review screen can show the real translation. nil until resolved.
+    var selectedWordContext: String?
 
     /// Native sentence(s) the tapped target sentence maps to, computed by the fine
     /// sentence-alignment layer. Empty while the refinement is still running (in which
@@ -99,6 +108,7 @@ final class ReaderViewModel {
     private var debounceTask: Task<Void, Never>?
     private var alignmentPollTask: Task<Void, Never>?
     private var sentenceRefineTask: Task<Void, Never>?
+    private var wordContextTask: Task<Void, Never>?
     /// Per-source-paragraph cache of the sentence-to-native-sentence alignment, so
     /// tapping different sentences in the same paragraph reuses one embedding pass.
     /// Cleared when the chapter or chapter offset changes (which invalidates the basis).
@@ -149,6 +159,7 @@ final class ReaderViewModel {
             if let entry = entries.first(where: { $0.id == entryID }) {
                 targetLanguage = entry.targetLanguage
                 nativeLanguage = entry.nativeLanguage
+                bookTitle = entry.title
             }
 
             let chapter = try await store.loadChapter(
@@ -278,13 +289,65 @@ final class ReaderViewModel {
         selectedWordRange = range
         selectedWordText = trimmed
         selectedWordAnchor = anchor
+
+        // Resolve the matching sentence from the aligned native book in the background so
+        // it can be stored on the card when saved. Not shown in the reader.
+        selectedWordContext = nil
+        wordContextTask?.cancel()
+        wordContextTask = Task { [weak self] in
+            await self?.computeWordContext(paragraphIndex: paragraphIndex, wordRange: range)
+        }
     }
 
     func dismissWordBalloon() {
+        wordContextTask?.cancel()
         selectedWordText = nil
         selectedWordParagraphIndex = nil
         selectedWordRange = nil
         selectedWordAnchor = nil
+        selectedWordContext = nil
+    }
+
+    /// Builds a `SavedWordRequest` from the current word selection plus the resolved
+    /// `translation`, locating the sentence the word lives in (the recall context) and
+    /// re-basing the word's character range into that sentence. Returns nil if the
+    /// selection state is incomplete.
+    func makeSaveRequest(translation: String) -> SavedWordRequest? {
+        guard let surface = selectedWordText,
+              let pIndex = selectedWordParagraphIndex,
+              let range = selectedWordRange,
+              let paragraphs = currentChapter?.paragraphs,
+              pIndex < paragraphs.count else { return nil }
+
+        let paragraph = paragraphs[pIndex]
+        let (sentence, wordRange) = containingSentence(in: paragraph, wordRange: range)
+        return SavedWordRequest(
+            surface: surface,
+            sentence: sentence,
+            wordLocation: wordRange.location,
+            wordLength: wordRange.length,
+            translation: translation,
+            nativeContext: selectedWordContext,
+            targetLanguage: targetLanguage,
+            nativeLanguage: nativeLanguage,
+            bookTitle: bookTitle.isEmpty ? nil : bookTitle,
+            chapterIndex: currentChapterIndex
+        )
+    }
+
+    /// Returns the sentence enclosing `wordRange` within `paragraph`, plus the word's
+    /// range expressed in that sentence's coordinates (for cloze blanking later).
+    private func containingSentence(in paragraph: String, wordRange: NSRange) -> (sentence: String, wordRange: NSRange) {
+        let ns = paragraph as NSString
+        let sentences = SentenceLocator.buildSentenceRanges(for: paragraph)
+        let enclosing = sentences.first { NSLocationInRange(wordRange.location, $0) } ?? sentences.last
+        guard let s = enclosing else {
+            return (ns.substring(with: wordRange), NSRange(location: 0, length: wordRange.length))
+        }
+        let sentenceText = ns.substring(with: s)
+        let localLocation = max(0, wordRange.location - s.location)
+        let localLength = min(wordRange.length, (sentenceText as NSString).length - localLocation)
+        return (sentenceText, NSRange(location: localLocation, length: max(0, localLength)))
     }
 
     func dismissPanel() {
@@ -508,17 +571,12 @@ final class ReaderViewModel {
             }
         }
 
-        let nativeIndices: [Int]
-        if tappedSentenceIndex < alignment.count, let range = alignment[tappedSentenceIndex] {
-            nativeIndices = Array(range.start...min(range.end, provenance.count - 1))
-        } else {
-            // Proportional fallback: place the tapped sentence at the matching fraction
-            // of the native sentence list when embeddings gave no usable mapping.
-            let denom = max(1, sourceTexts.count - 1)
-            let fraction = Double(tappedSentenceIndex) / Double(denom)
-            let idx = Int((fraction * Double(max(0, nativeSentenceTexts.count - 1))).rounded())
-            nativeIndices = [min(max(0, idx), provenance.count - 1)]
-        }
+        let nativeIndices = matchedNativeIndices(
+            forTapped: tappedSentenceIndex,
+            alignment: alignment,
+            sourceCount: sourceTexts.count,
+            nativeCount: nativeSentenceTexts.count
+        )
 
         let highlights = nativeIndices.compactMap { idx -> SentenceHighlight? in
             guard idx >= 0, idx < provenance.count else { return nil }
@@ -530,6 +588,104 @@ final class ReaderViewModel {
         if let first = highlights.first {
             panelCentre = ParagraphIndex(chapterIndex: nativeChapterIndex,
                                          paragraphIndex: first.paragraphIndex)
+        }
+    }
+
+    /// Chooses which native sentence indices correspond to the tapped source sentence,
+    /// using the embedding alignment when present and a proportional fallback otherwise.
+    /// Shared by the panel highlight path and the word-balloon context path.
+    private func matchedNativeIndices(forTapped tappedSentenceIndex: Int,
+                                      alignment: [TargetParagraphRange?],
+                                      sourceCount: Int,
+                                      nativeCount: Int) -> [Int] {
+        guard nativeCount > 0 else { return [] }
+        if tappedSentenceIndex < alignment.count, let range = alignment[tappedSentenceIndex] {
+            return Array(range.start...min(range.end, nativeCount - 1))
+        }
+        let denom = max(1, sourceCount - 1)
+        let fraction = Double(tappedSentenceIndex) / Double(denom)
+        let idx = Int((fraction * Double(max(0, nativeCount - 1))).rounded())
+        return [min(max(0, idx), nativeCount - 1)]
+    }
+
+    // MARK: - Word context (aligned native sentence)
+
+    /// Resolves the native (chapter, paragraph-range) a target paragraph maps to, using
+    /// the same precedence as `handleSentenceTap`: the alignment table when it has an
+    /// entry, otherwise the proportional engine.
+    private func resolveNativeMapping(targetParagraphIndex: Int) -> (chapterIndex: Int, range: TargetParagraphRange)? {
+        guard let tp = targetProfile, let np = nativeProfile else { return nil }
+        if let table = alignmentTable,
+           let range = table.range(forSourceChapter: currentChapterIndex, paragraph: targetParagraphIndex) {
+            return (currentChapterIndex + chapterOffset, range)
+        }
+        let centre = DefaultAlignmentEngine.mapParagraph(
+            ParagraphIndex(chapterIndex: currentChapterIndex, paragraphIndex: targetParagraphIndex),
+            from: tp, to: np, policy: alignmentPolicy, offset: chapterOffset
+        )
+        return (centre.chapterIndex, TargetParagraphRange(start: centre.paragraphIndex, end: centre.paragraphIndex))
+    }
+
+    /// Computes the native sentence(s) from the parallel book that align with the sentence
+    /// the long-pressed word lives in, and publishes them to `selectedWordContext`. Runs
+    /// off the panel state so it never opens or disturbs the bottom panel.
+    private func computeWordContext(paragraphIndex: Int, wordRange: NSRange) async {
+        guard let targetParas = currentChapter?.paragraphs,
+              paragraphIndex < targetParas.count else { return }
+        let targetText = targetParas[paragraphIndex]
+        let sourceRanges = SentenceLocator.buildSentenceRanges(for: targetText)
+        guard !sourceRanges.isEmpty else { return }
+        let tappedIndex = sourceRanges.firstIndex { NSLocationInRange(wordRange.location, $0) } ?? 0
+
+        guard let mapping = resolveNativeMapping(targetParagraphIndex: paragraphIndex),
+              let nid = nativeBookID else { return }
+
+        let nativeChapter = try? await store.loadChapter(
+            ChapterRef(bookID: nid, chapterIndex: mapping.chapterIndex)
+        )
+        guard !Task.isCancelled, let nativeParas = nativeChapter?.paragraphs else { return }
+        let start = max(0, mapping.range.start)
+        let end = min(nativeParas.count - 1, mapping.range.end)
+        guard start <= end else { return }
+
+        var nativeTexts: [String] = []
+        for p in start...end {
+            let ns = nativeParas[p] as NSString
+            for r in SentenceLocator.buildSentenceRanges(for: nativeParas[p]) {
+                nativeTexts.append(ns.substring(with: r))
+            }
+        }
+        guard !nativeTexts.isEmpty else { return }
+
+        let sourceTexts = sourceRanges.map { (targetText as NSString).substring(with: $0) }
+
+        let alignment: [TargetParagraphRange?]
+        if let cached = sentenceRefineCache[paragraphIndex] {
+            alignment = cached
+        } else {
+            let computed = try? await SentenceAligner.align(source: sourceTexts, target: nativeTexts)
+            if Task.isCancelled { return }
+            if let computed, computed.count == sourceTexts.count {
+                alignment = computed
+                sentenceRefineCache[paragraphIndex] = computed
+            } else {
+                alignment = []
+            }
+        }
+
+        let indices = matchedNativeIndices(
+            forTapped: tappedIndex,
+            alignment: alignment,
+            sourceCount: sourceTexts.count,
+            nativeCount: nativeTexts.count
+        )
+        let matched = indices.compactMap { $0 >= 0 && $0 < nativeTexts.count ? nativeTexts[$0] : nil }
+        guard !matched.isEmpty, !Task.isCancelled else { return }
+
+        // Only publish if the user hasn't moved on to another selection.
+        if selectedWordParagraphIndex == paragraphIndex {
+            selectedWordContext = matched.joined(separator: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
         }
     }
 }

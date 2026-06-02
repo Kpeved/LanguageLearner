@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		726E356A2FCDCD7500CBF31B /* VocabKit in Frameworks */ = {isa = PBXBuildFile; productRef = 726E35692FCDCD7500CBF31B /* VocabKit */; };
 		72E1DAEC2FC8AA1400747F0F /* Alignment in Frameworks */ = {isa = PBXBuildFile; productRef = 72E1DAEB2FC8AA1400747F0F /* Alignment */; };
 		72E1DAEE2FC8AA1400747F0F /* EPUBKit in Frameworks */ = {isa = PBXBuildFile; productRef = 72E1DAED2FC8AA1400747F0F /* EPUBKit */; };
 		72E1DAF02FC8AA1400747F0F /* ImportUI in Frameworks */ = {isa = PBXBuildFile; productRef = 72E1DAEF2FC8AA1400747F0F /* ImportUI */; };
@@ -65,6 +66,7 @@
 				72E1DAEC2FC8AA1400747F0F /* Alignment in Frameworks */,
 				72E1DAF22FC8AA1400747F0F /* LibraryStore in Frameworks */,
 				72E1DAF42FC8AA1400747F0F /* ReaderUI in Frameworks */,
+				726E356A2FCDCD7500CBF31B /* VocabKit in Frameworks */,
 				72E1DAF62FC8AA1400747F0F /* TTSService in Frameworks */,
 				72E1DAEE2FC8AA1400747F0F /* EPUBKit in Frameworks */,
 			);
@@ -141,6 +143,7 @@
 				72E1DAF12FC8AA1400747F0F /* LibraryStore */,
 				72E1DAF32FC8AA1400747F0F /* ReaderUI */,
 				72E1DAF52FC8AA1400747F0F /* TTSService */,
+				726E35692FCDCD7500CBF31B /* VocabKit */,
 			);
 			productName = LanguageLearner;
 			productReference = 72E1DAB82FC8936D00747F0F /* LanguageLearner.app */;
@@ -231,6 +234,7 @@
 				72E1DAE72FC8A9CF00747F0F /* XCLocalSwiftPackageReference "Packages/LibraryStore" */,
 				72E1DAE82FC8A9D900747F0F /* XCLocalSwiftPackageReference "Packages/ReaderUI" */,
 				72E1DAE92FC8A9E100747F0F /* XCLocalSwiftPackageReference "Packages/TTSService" */,
+				726E35682FCDCD5D00CBF31B /* XCLocalSwiftPackageReference "Packages/VocabKit" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 72E1DAB92FC8936D00747F0F /* Products */;
@@ -617,6 +621,10 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
+		726E35682FCDCD5D00CBF31B /* XCLocalSwiftPackageReference "Packages/VocabKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/VocabKit;
+		};
 		72E1DAE42FC8A9A900747F0F /* XCLocalSwiftPackageReference "Packages/Alignment" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Packages/Alignment;
@@ -644,6 +652,11 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		726E35692FCDCD7500CBF31B /* VocabKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 726E35682FCDCD5D00CBF31B /* XCLocalSwiftPackageReference "Packages/VocabKit" */;
+			productName = VocabKit;
+		};
 		72E1DAEB2FC8AA1400747F0F /* Alignment */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 72E1DAE42FC8A9A900747F0F /* XCLocalSwiftPackageReference "Packages/Alignment" */;

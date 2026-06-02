@@ -2,10 +2,58 @@ import SwiftUI
 import LibraryStore
 import TTSService
 
+/// A request to save a long-pressed word/phrase to the vocabulary deck. Emitted by the
+/// reader; the host app performs lemmatization and persistence (keeps ReaderUI free of a
+/// VocabKit dependency). All character indices are NSString-based.
+public struct SavedWordRequest: Sendable, Equatable {
+    /// The inflected form as it appeared in the text.
+    public let surface: String
+    /// The sentence the word was tapped in (the recall context / cloze source).
+    public let sentence: String
+    /// Location of `surface` within `sentence`.
+    public let wordLocation: Int
+    /// Length of `surface` within `sentence`.
+    public let wordLength: Int
+    /// Offline translation shown in the balloon at save time.
+    public let translation: String
+    /// The sentence from the aligned parallel (native) book that contains this word, taken
+    /// directly from the translation. nil if alignment wasn't resolved in time.
+    public let nativeContext: String?
+    public let targetLanguage: String
+    public let nativeLanguage: String
+    public let bookTitle: String?
+    public let chapterIndex: Int
+
+    public init(
+        surface: String,
+        sentence: String,
+        wordLocation: Int,
+        wordLength: Int,
+        translation: String,
+        nativeContext: String?,
+        targetLanguage: String,
+        nativeLanguage: String,
+        bookTitle: String?,
+        chapterIndex: Int
+    ) {
+        self.surface = surface
+        self.sentence = sentence
+        self.wordLocation = wordLocation
+        self.wordLength = wordLength
+        self.translation = translation
+        self.nativeContext = nativeContext
+        self.targetLanguage = targetLanguage
+        self.nativeLanguage = nativeLanguage
+        self.bookTitle = bookTitle
+        self.chapterIndex = chapterIndex
+    }
+}
+
 /// The primary reading view. Shows the target-language text in a scrollable list of paragraphs.
 /// Tapping a sentence highlights it and presents a translation panel with mapped native paragraphs.
 public struct ReaderView: View {
     private let entryID: PairedEntryID
+    private let onSaveWord: (SavedWordRequest) -> Void
     @State private var viewModel: ReaderViewModel
     @State private var settings: ReaderSettings = .default
     @AppStorage("readerUI.voicePromptShown") private var voicePromptShown: Bool = false
@@ -15,8 +63,17 @@ public struct ReaderView: View {
     /// Reader content frame in global coordinates, used to place the word-translation balloon.
     @State private var readerFrame: CGRect = .zero
 
-    public init(entryID: PairedEntryID, store: any LibraryStore, tts: any TTSService) {
+    /// - Parameter onSaveWord: Called when the user taps Save in the translation balloon.
+    ///   The host app lemmatizes and persists to the vocabulary deck. Defaults to a no-op
+    ///   so existing call sites (and tests) compile unchanged.
+    public init(
+        entryID: PairedEntryID,
+        store: any LibraryStore,
+        tts: any TTSService,
+        onSaveWord: @escaping (SavedWordRequest) -> Void = { _ in }
+    ) {
         self.entryID = entryID
+        self.onSaveWord = onSaveWord
         self._viewModel = State(
             initialValue: ReaderViewModel(entryID: entryID, store: store, tts: tts)
         )
@@ -231,6 +288,13 @@ public struct ReaderView: View {
                     targetLanguage: viewModel.nativeLanguage,
                     anchorInGlobal: anchor,
                     containerFrame: readerFrame,
+                    isSaved: viewModel.lastSavedWordKey == text,
+                    onSave: { translation in
+                        if let request = viewModel.makeSaveRequest(translation: translation) {
+                            onSaveWord(request)
+                            viewModel.lastSavedWordKey = text
+                        }
+                    },
                     onClose: { viewModel.dismissWordBalloon() }
                 )
                 .id(text)

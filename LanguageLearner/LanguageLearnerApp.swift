@@ -2,17 +2,18 @@ import SwiftUI
 import SwiftData
 import LibraryStore
 import TTSService
+import VocabKit
 
 @main
 struct LanguageLearnerApp: App {
     let modelContainer: ModelContainer
     let store: DefaultLibraryStore
     let tts: DefaultTTSService
+    let vocab: DefaultVocabStore
 
     init() {
         NSLog("[App] LanguageLearnerApp.init() called -- if you see this, console works.")
-        print("[App-print] LanguageLearnerApp.init() called via print().")
-        let schema = Schema([PairedEntry.self, Book.self])
+        let schema = Schema([PairedEntry.self, Book.self, VocabCard.self])
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
         let container: ModelContainer
         do {
@@ -23,11 +24,12 @@ struct LanguageLearnerApp: App {
         self.modelContainer = container
         self.store = DefaultLibraryStore(modelContext: container.mainContext)
         self.tts = DefaultTTSService()
+        self.vocab = DefaultVocabStore(modelContext: container.mainContext)
     }
 
     var body: some Scene {
         WindowGroup {
-            LibraryRootView(store: store, tts: tts)
+            LibraryRootView(store: store, tts: tts, vocab: vocab)
         }
         .modelContainer(modelContainer)
     }

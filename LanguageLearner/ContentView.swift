@@ -5,6 +5,7 @@ import LibraryStore
 import TTSService
 import ReaderUI
 import ImportUI
+import VocabKit
 
 enum AppTheme: String, CaseIterable, Identifiable {
     case system
@@ -41,13 +42,23 @@ enum AppTheme: String, CaseIterable, Identifiable {
 struct LibraryRootView: View {
     let store: any LibraryStore
     let tts: any TTSService
+    let vocab: any VocabStore
 
     @Query(sort: \PairedEntry.createdAt, order: .reverse)
     private var entries: [PairedEntry]
 
+    /// Drives the live "due" badge on the Cards button. Updates whenever the deck changes.
+    @Query private var cards: [VocabCard]
+
     @State private var presentingImport = false
     @State private var presentingSettings = false
+    @State private var presentingDeck = false
     @AppStorage("appTheme") private var appTheme: AppTheme = .system
+
+    private var dueCount: Int {
+        let now = Date()
+        return cards.reduce(0) { $0 + ($1.dueDate <= now ? 1 : 0) }
+    }
 
     var body: some View {
         NavigationStack {
@@ -62,7 +73,12 @@ struct LibraryRootView: View {
                     List {
                         ForEach(entries) { entry in
                             NavigationLink {
-                                ReaderView(entryID: entry.id, store: store, tts: tts)
+                                ReaderView(
+                                    entryID: entry.id,
+                                    store: store,
+                                    tts: tts,
+                                    onSaveWord: { request in saveWord(request) }
+                                )
                             } label: {
                                 LibraryRow(entry: entry)
                             }
@@ -80,6 +96,25 @@ struct LibraryRootView: View {
                         Label("Settings", systemImage: "gearshape")
                     }
                     .accessibilityLabel("Settings")
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        presentingDeck = true
+                    } label: {
+                        Image(systemName: "rectangle.on.rectangle.angled")
+                            .overlay(alignment: .topTrailing) {
+                                if dueCount > 0 {
+                                    Text(dueCount > 99 ? "99+" : "\(dueCount)")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 4)
+                                        .padding(.vertical, 1)
+                                        .background(Capsule().fill(.red))
+                                        .offset(x: 10, y: -8)
+                                }
+                            }
+                    }
+                    .accessibilityLabel(dueCount > 0 ? "Vocabulary deck, \(dueCount) due" : "Vocabulary deck")
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
@@ -104,6 +139,9 @@ struct LibraryRootView: View {
             .sheet(isPresented: $presentingSettings) {
                 SettingsView(appTheme: $appTheme)
             }
+            .sheet(isPresented: $presentingDeck) {
+                DeckView(vocab: vocab, tts: tts)
+            }
         }
         .preferredColorScheme(appTheme.colorScheme)
     }
@@ -114,6 +152,32 @@ struct LibraryRootView: View {
             for id in targets {
                 try? await store.deleteEntry(id)
             }
+        }
+    }
+
+    /// Lemmatizes a saved word and persists it (or appends a sighting to an existing card).
+    private func saveWord(_ request: SavedWordRequest) {
+        let analysis = Lemmatizer.analyze(word: request.surface, language: request.targetLanguage)
+        let sighting = Sighting(
+            sentence: request.sentence,
+            wordLocation: request.wordLocation,
+            wordLength: request.wordLength,
+            nativeContext: request.nativeContext,
+            bookTitle: request.bookTitle,
+            chapterIndex: request.chapterIndex,
+            date: Date()
+        )
+        let vocab = self.vocab
+        Task {
+            _ = try? await vocab.saveOrAppend(
+                lemma: analysis.lemma,
+                surface: request.surface,
+                translation: request.translation,
+                partOfSpeech: analysis.partOfSpeech,
+                targetLanguage: request.targetLanguage,
+                nativeLanguage: request.nativeLanguage,
+                sighting: sighting
+            )
         }
     }
 }
